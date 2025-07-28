@@ -1,0 +1,5 @@
+bin
+obj
+downloaded-issues
+*.log
+secrets.json
