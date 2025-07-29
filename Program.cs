@@ -11,6 +11,7 @@ using Azure.AI.OpenAI;
 using OpenAI.Chat;
 using Azure;
 using Microsoft.Extensions.AI;
+using System.Diagnostics;
 
 class Program
 {
@@ -123,18 +124,19 @@ for this error '{1}'. And give me the issue number with your confidence in the m
             Temperature = 0.1f,
             TopP = 0.1f
         };
+        Console.WriteLine($"Parsed errors from {logFile}:");
         foreach (var (Error, Occurrences) in (await _chatClient.GetResponseAsync<ErrorOccurrence[]>(string.Format(ExtractErrorPrompt, await File.ReadAllTextAsync(logFile)), chatOptions)).Result)
         {
-            Console.WriteLine("========================");
-            Console.WriteLine($"{Occurrences}x {Error}{Environment.NewLine}");
+            Console.WriteLine($"{Occurrences}x {Error}");
             foreach (var (IssueNumber, Score) in (await _chatClient.GetResponseAsync<IssueRelevance[]>(string.Format(MatchIssuePrompt, string.Join(Environment.NewLine, Issues.Select(pair => $"Number = {pair.Key}; State = {pair.Value.State}; Title = {pair.Value.Title}; Description = {pair.Value.Body}")), Error), chatOptions)).Result)
             {
-                Console.WriteLine($"matching https://github.com/dotnet/runtime/issues/{IssueNumber} with confidence {Score}");
+                Console.WriteLine($"Matching issue https://github.com/dotnet/runtime/issues/{IssueNumber} with confidence {Score}");
             }
         }
     }
     static async Task DownloadAndParseIssueData()
     {
+        Console.WriteLine("Downloading issue data ...");
         var directoryName = "downloaded-issues";
         Directory.CreateDirectory(directoryName);
         using var ghClient = new HttpClient();
@@ -143,16 +145,26 @@ for this error '{1}'. And give me the issue number with your confidence in the m
 
         foreach (var issue in Issues.Keys)
         {
+            Console.WriteLine($"Downloading issue #{issue} ...");
             var issuePath = Path.Combine(directoryName, $"issue-{issue}.json");
             if (!File.Exists(issuePath) || !TryParse(issuePath, out var ghIssue))
             {
+                Console.WriteLine($"Fetching issue #{issue} from github.");
                 var uri = $"repos/dotnet/runtime/issues/{issue}";
                 var ghStream = await ghClient.GetStreamAsync(uri);
                 using var file = new FileStream(issuePath, FileMode.Create);
                 await ghStream.CopyToAsync(file);
                 await file.FlushAsync();
-                TryParse(issuePath, out ghIssue);
+                if (!TryParse(issuePath, out ghIssue))
+                {
+                    throw new Exception($"Unable to fetch and parse #{issue} from github.");
+                }
             }
+            else
+            {
+                Console.WriteLine($"Issue #{issue} pre-downloaded.");
+            }
+            Debug.Assert(ghIssue is not null);
             Issues[issue] = ghIssue;
         }
 
@@ -189,6 +201,7 @@ for this error '{1}'. And give me the issue number with your confidence in the m
 
         string url = $"https://dev.azure.com/{Organization}/{Project}/_apis/build/builds?definitions={DefinitionId}&minTime={minTime}&maxTime={maxTime}&api-version=7.2-preview.7";
 
+        Console.WriteLine($"Fetching stress pipeline results for {minTime:yyyy-MM-dd} - {maxTime:yyyy-MM-dd} from {url}.");
         using (var client = new HttpClient())
         {
             string responseBody = await client.GetStringAsync(url);
@@ -243,6 +256,8 @@ for this error '{1}'. And give me the issue number with your confidence in the m
 
             // Download the log for the failed step.
             string logUrl = $"https://dev.azure.com/{Organization}/{Project}/_apis/build/builds/{buildId}/logs/{logId}?api-version=7.2-preview.2";
+
+            Console.WriteLine($"Fetching log for failed pipeline step from {logUrl}.");
 
             using var logStream = await client.GetStreamAsync(logUrl);
             var logFilePath = Path.Combine(outputDir, $"{name}.log");
